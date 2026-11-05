@@ -1,10 +1,9 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use ignore::WalkBuilder;
 use regex::{Regex, RegexBuilder};
 
-use crate::record::Modified;
+use crate::files;
 use crate::store::{Store, StoreError};
 
 /// One line that matched, as grep prints it: the file, the line number counted from 1, and the line's text.
@@ -46,32 +45,14 @@ impl Search {
 
     /// Walks the paths, skipping what `.gitignore` lists and hidden files, and returns every line that matches,
     /// in walk order. A file whose size and modified time the store already holds is read from the store. Any
-    /// other file is read from disk and stored first. Files that cannot be read or are not text are skipped.
-    /// Fails only when the store cannot be written.
+    /// other file is read from disk and stored first, with its chunks. Files that cannot be read or are not text
+    /// are skipped. Fails only when the store cannot be written.
     pub fn run(&self, store: &mut Store) -> Result<Vec<Match>, StoreError> {
         let mut found = Vec::new();
-        let mut walk = WalkBuilder::new(&self.paths[0]);
-        walk.require_git(false);
-        for path in &self.paths[1..] {
-            walk.add(path);
-        }
-        for entry in walk.build() {
+        for entry in files::walk(Path::new(&self.paths[0]), &self.paths[1..]) {
             let Ok(entry) = entry else { continue };
-            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                continue;
-            }
-            let Ok(metadata) = entry.metadata() else { continue };
-            let Ok(time) = metadata.modified() else { continue };
-            let size = metadata.len();
-            let modified = Modified::create(time);
-            let Ok(absolute) = std::path::absolute(entry.path()) else { continue };
-            let key = absolute.strip_prefix(store.root()).unwrap_or(&absolute).to_string_lossy().into_owned();
-            if store.held(&key, size, modified).is_none() {
-                let Ok(bytes) = std::fs::read(entry.path()) else { continue };
-                let Ok(text) = String::from_utf8(bytes) else { continue };
-                store.put(&key, size, modified, &text)?;
-            }
-            let Some(record) = store.held(&key, size, modified) else { continue };
+            let Some(kept) = files::keep(store, &entry)? else { continue };
+            let Some(record) = store.held(&kept.key, kept.size, kept.modified) else { continue };
             for (index, line) in record.lines().enumerate() {
                 if !self.pattern.is_match(line) {
                     continue;

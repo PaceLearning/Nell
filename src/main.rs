@@ -1,9 +1,11 @@
+mod files;
 mod record;
 mod search;
 mod store;
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Instant;
 
 use search::Search;
 use store::Store;
@@ -43,8 +45,44 @@ fn main() -> ExitCode {
         let status = store.status();
         println!("store: {}", status.path.display());
         println!("files: {}", status.files);
+        println!("chunks: {}", status.chunks);
         println!("bytes: {}", status.bytes);
         println!("dead bytes: {}", status.dead_bytes);
+        return ExitCode::SUCCESS;
+    }
+    if words.len() == 1 && words[0] == "init" {
+        let started = Instant::now();
+        let opened = store::root_of(Path::new(".")).and_then(|root| Store::open(&root));
+        let mut store = match opened {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("nell: {error}");
+                return ExitCode::from(2);
+            }
+        };
+        if let Err(error) = store.clear() {
+            eprintln!("nell: {error}");
+            return ExitCode::from(2);
+        }
+        let root = store.root().to_path_buf();
+        let mut file_count = 0;
+        let mut chunk_count = 0;
+        for entry in files::walk(&root, &[]) {
+            let Ok(entry) = entry else { continue };
+            let kept = match files::keep(&mut store, &entry) {
+                Ok(kept) => kept,
+                Err(error) => {
+                    eprintln!("nell: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(kept) = kept else { continue };
+            let Some(record) = store.held(&kept.key, kept.size, kept.modified) else { continue };
+            file_count += 1;
+            chunk_count += record.chunk_count();
+        }
+        let seconds = started.elapsed().as_secs_f64();
+        println!("{file_count} files, {chunk_count} chunks, {seconds:.1} seconds");
         return ExitCode::SUCCESS;
     }
     let pattern = words.remove(0);

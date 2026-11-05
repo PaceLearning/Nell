@@ -51,6 +51,8 @@ pub struct Status {
     pub path: PathBuf,
     /// How many files the store holds a version of.
     pub files: usize,
+    /// How many chunks those files are split into.
+    pub chunks: usize,
     /// The committed length of the store file.
     pub bytes: u64,
     /// Bytes held by records that a newer version has replaced.
@@ -149,6 +151,10 @@ impl Store {
             let (heads, end) = record::scan(&map[..committed], HEADER);
             let mut index = HashMap::new();
             for head in heads {
+                if head.kind == record::KIND_CLEAR {
+                    index.clear();
+                    continue;
+                }
                 index.insert(head.path.clone(), head);
             }
             return Ok(Store { path, root: root.to_path_buf(), file, map, committed: end, index });
@@ -195,6 +201,10 @@ impl Store {
             let committed = committed.min(self.map.len());
             let (heads, end) = record::scan(&self.map[..committed], self.committed);
             for head in heads {
+                if head.kind == record::KIND_CLEAR {
+                    self.index.clear();
+                    continue;
+                }
                 self.index.insert(head.path.clone(), head);
             }
             self.committed = end;
@@ -224,7 +234,7 @@ impl Store {
             for head in heads {
                 let offset = bytes.len();
                 bytes.extend_from_slice(&self.map[head.offset..head.offset + head.total]);
-                index.insert(head.path.clone(), Head { path: head.path.clone(), offset, total: head.total });
+                index.insert(head.path.clone(), Head { offset, ..head.clone() });
             }
             let end = bytes.len();
             bytes[16..24].copy_from_slice(&(end as u64).to_le_bytes());
@@ -261,18 +271,54 @@ impl Store {
         (&self.file).flush().map_err(|error| StoreError::Io(self.path.clone(), error))?;
         // SAFETY: as in `open`.
         self.map = unsafe { Mmap::map(&self.file) }.map_err(|error| StoreError::Io(self.path.clone(), error))?;
-        self.index.insert(path.to_string(), Head { path: path.to_string(), offset, total: bytes.len() });
+        let head = Head { kind: record::KIND_TEXT, path: path.to_string(), offset, total: bytes.len() };
+        self.index.insert(path.to_string(), head);
         self.committed = end;
         self.file.unlock().map_err(|error| StoreError::Io(self.path.clone(), error))?;
         Ok(())
     }
 
-    /// The store file, how many files it holds, its committed length and its dead bytes.
+    /// Starts the store over, under the lock, by appending a record that marks every record before it as dead.
+    /// Processes that have the store open see it at their next write. The dead bytes go at the next compaction.
+    pub fn clear(&mut self) -> Result<(), StoreError> {
+        let mut header = [0u8; HEADER];
+        loop {
+            self.file.lock().map_err(|error| StoreError::Io(self.path.clone(), error))?;
+            (&self.file).seek(SeekFrom::Start(0)).map_err(|error| StoreError::Io(self.path.clone(), error))?;
+            (&self.file).read_exact(&mut header).map_err(|error| StoreError::Io(self.path.clone(), error))?;
+            if &header[0..8] != DEAD {
+                break;
+            }
+            self.file.unlock().map_err(|error| StoreError::Io(self.path.clone(), error))?;
+            *self = Store::open(&self.root)?;
+        }
+        let length = self.file.metadata().map_err(|error| StoreError::Io(self.path.clone(), error))?.len();
+        let offset = (record::u64_at(&header, 16).unwrap_or(0).min(length) as usize).max(HEADER);
+        let bytes = record::encode_clear();
+        (&self.file).seek(SeekFrom::Start(offset as u64)).map_err(|error| StoreError::Io(self.path.clone(), error))?;
+        (&self.file).write_all(&bytes).map_err(|error| StoreError::Io(self.path.clone(), error))?;
+        let end = offset + bytes.len();
+        (&self.file).seek(SeekFrom::Start(16)).map_err(|error| StoreError::Io(self.path.clone(), error))?;
+        (&self.file).write_all(&(end as u64).to_le_bytes()).map_err(|error| StoreError::Io(self.path.clone(), error))?;
+        (&self.file).flush().map_err(|error| StoreError::Io(self.path.clone(), error))?;
+        // SAFETY: as in `open`.
+        self.map = unsafe { Mmap::map(&self.file) }.map_err(|error| StoreError::Io(self.path.clone(), error))?;
+        self.index.clear();
+        self.committed = end;
+        self.file.unlock().map_err(|error| StoreError::Io(self.path.clone(), error))?;
+        Ok(())
+    }
+
+    /// The store file, how many files and chunks it holds, its committed length and its dead bytes.
     pub fn status(&self) -> Status {
         let live: usize = self.index.values().map(|head| head.total).sum();
+        let bytes = &self.map[..self.committed];
+        let records = self.index.values().filter_map(|head| record::read(bytes, head.offset));
+        let chunks = records.map(|record| record.chunk_count()).sum();
         Status {
             path: self.path.clone(),
             files: self.index.len(),
+            chunks,
             bytes: self.committed as u64,
             dead_bytes: (self.committed - HEADER - live) as u64,
         }

@@ -10,11 +10,12 @@ fn status_prints_the_store_file_and_its_counts() {
     let (code, out) = nell(&folder, &["status"]);
     assert_eq!(code, 0);
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 4, "{out}");
+    assert_eq!(lines.len(), 5, "{out}");
     assert!(lines[0].starts_with(&format!("store: {}", home(&folder).display())), "{out}");
     assert_eq!(lines[1], "files: 0");
-    assert_eq!(lines[2], "bytes: 32");
-    assert_eq!(lines[3], "dead bytes: 0");
+    assert_eq!(lines[2], "chunks: 0");
+    assert_eq!(lines[3], "bytes: 32");
+    assert_eq!(lines[4], "dead bytes: 0");
 }
 
 #[test]

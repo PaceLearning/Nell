@@ -1,13 +1,25 @@
 //! The bytes of one store record.
 //!
 //! A record is a kind byte, a length, and a body. The length counts the body, so a reader that does not know a
-//! kind can skip it. Kind 1 is a file's text: the path relative to the repository root, the size and modified
-//! time the file had on disk, the text, and the start of every line. All numbers are little endian.
+//! kind can skip it. Every body starts with a path. All numbers are little endian.
+//!
+//! Kind 2 is a file's text: the path relative to the repository root, the size and modified time the file had
+//! on disk, the text, the start of every line, and the chunks, each as its first and last line counted from 1.
+//! Kind 3 starts the store over: every record before it is dead. Its path is empty.
+//!
+//! Kind 1 was a file's text without chunks. Nell no longer reads it, so such a file counts as not held and is
+//! read from disk and stored again.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The kind byte of a record that holds a file's text.
-pub const KIND_TEXT: u8 = 1;
+/// The kind byte of a record that holds a file's text and its chunks.
+pub const KIND_TEXT: u8 = 2;
+
+/// The kind byte of a record that marks every record before it as dead.
+pub const KIND_CLEAR: u8 = 3;
+
+/// The most lines in one chunk.
+pub const CHUNK_LINES: usize = 32;
 
 /// The bytes before a record's body: the kind and the length.
 pub const HEAD: usize = 5;
@@ -29,9 +41,11 @@ impl Modified {
     }
 }
 
-/// Where one record sits in the store: its path, its offset from the start of the file, and its whole length.
+/// Where one record sits in the store: its kind, its path, its offset from the start of the file, and its whole
+/// length.
 #[derive(Clone, Debug)]
 pub struct Head {
+    pub kind: u8,
     pub path: String,
     pub offset: usize,
     pub total: usize,
@@ -43,12 +57,18 @@ pub struct Record<'a> {
     pub modified: Modified,
     pub text: &'a str,
     starts: &'a [u8],
+    chunks: &'a [u8],
 }
 
 impl<'a> Record<'a> {
     /// The lines of the text, the way `str::lines` gives them, read from the stored line starts.
     pub fn lines(&self) -> Lines<'a> {
         Lines { text: self.text, starts: self.starts, index: 0 }
+    }
+
+    /// How many chunks the text is split into.
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len() / 8
     }
 }
 
@@ -89,7 +109,10 @@ pub fn u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
     Some(u64::from_le_bytes(slice.try_into().ok()?))
 }
 
-/// Builds the bytes of a text record, line starts included.
+/// Builds the bytes of a text record, line starts and chunks included.
+///
+/// A chunk is at most `CHUNK_LINES` lines. When a full chunk has a blank line in its last third, it ends at the
+/// last such blank line instead, so chunks tend to break between blocks of code or paragraphs.
 pub fn encode(path: &str, size: u64, modified: Modified, text: &str) -> Vec<u8> {
     let mut starts: Vec<u32> = Vec::new();
     if !text.is_empty() {
@@ -101,7 +124,22 @@ pub fn encode(path: &str, size: u64, modified: Modified, text: &str) -> Vec<u8> 
         }
         starts.push((index + 1) as u32);
     }
-    let body = 4 + path.len() + 8 + 8 + 4 + 4 + text.len() + 4 + starts.len() * 4;
+    let blank: Vec<bool> = text.lines().map(|line| line.trim().is_empty()).collect();
+    let mut chunks: Vec<(u32, u32)> = Vec::new();
+    let mut start = 0;
+    while start < blank.len() {
+        let mut end = (start + CHUNK_LINES).min(blank.len());
+        let third = start + CHUNK_LINES - CHUNK_LINES / 3;
+        if end - start == CHUNK_LINES
+            && end < blank.len()
+            && let Some(at) = (third..end).rev().find(|&index| blank[index])
+        {
+            end = at + 1;
+        }
+        chunks.push((start as u32 + 1, end as u32));
+        start = end;
+    }
+    let body = 4 + path.len() + 8 + 8 + 4 + 4 + text.len() + 4 + starts.len() * 4 + 4 + chunks.len() * 8;
     let mut bytes = Vec::with_capacity(HEAD + body);
     bytes.push(KIND_TEXT);
     bytes.extend_from_slice(&(body as u32).to_le_bytes());
@@ -116,6 +154,20 @@ pub fn encode(path: &str, size: u64, modified: Modified, text: &str) -> Vec<u8> 
     for start in starts {
         bytes.extend_from_slice(&start.to_le_bytes());
     }
+    bytes.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
+    for (first, last) in chunks {
+        bytes.extend_from_slice(&first.to_le_bytes());
+        bytes.extend_from_slice(&last.to_le_bytes());
+    }
+    bytes
+}
+
+/// Builds the bytes of a record that starts the store over.
+pub fn encode_clear() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(HEAD + 4);
+    bytes.push(KIND_CLEAR);
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
     bytes
 }
 
@@ -133,7 +185,8 @@ pub fn scan(bytes: &[u8], from: usize) -> (Vec<Head>, usize) {
         let Some(path_len) = u32_at(bytes, offset + HEAD) else { break };
         let Some(path) = bytes.get(offset + HEAD + 4..offset + HEAD + 4 + path_len as usize) else { break };
         let Ok(path) = std::str::from_utf8(path) else { break };
-        heads.push(Head { path: path.to_string(), offset, total });
+        let Some(&kind) = bytes.get(offset) else { break };
+        heads.push(Head { kind, path: path.to_string(), offset, total });
         offset += total;
     }
     (heads, offset)
@@ -157,5 +210,8 @@ pub fn read(bytes: &[u8], offset: usize) -> Option<Record<'_>> {
     let at = at + 24 + text_len;
     let count = u32_at(body, at)? as usize;
     let starts = body.get(at + 4..at + 4 + count * 4)?;
-    Some(Record { size, modified: Modified { secs, nanos }, text, starts })
+    let at = at + 4 + count * 4;
+    let count = u32_at(body, at)? as usize;
+    let chunks = body.get(at + 4..at + 4 + count * 8)?;
+    Some(Record { size, modified: Modified { secs, nanos }, text, starts, chunks })
 }
