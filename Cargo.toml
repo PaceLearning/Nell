@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 ignore = "0.4.34"
+memmap2 = "0.9.12"
 regex = "1.13.1"
