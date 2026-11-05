@@ -3,7 +3,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{folder, nell, nell_with_stderr, status_number};
+use common::{folder, native, nell, nell_with_stderr, status_number};
 
 /// Adds two 64 line files to a test folder. In `long.rs` line 23 is blank, inside the last third of the first
 /// 32 lines, so its chunks are 1 to 23, 24 to 55 and 56 to 64. In `plain.rs` line 10 is blank, too early to
@@ -75,7 +75,7 @@ fn a_search_after_init_finds_its_lines_from_the_store() {
     let (code, out) = nell(&folder, &["validate_token", "src"]);
     let (_, after) = nell(&folder, &["status"]);
     assert_eq!(code, 0);
-    assert_eq!(out, "src/auth.rs:1:fn validate_token() {}\n".replace('/', std::path::MAIN_SEPARATOR_STR));
+    assert_eq!(out, native("src/auth.rs:1:fn validate_token() {}\n"));
     assert_eq!(before, after);
 }
 

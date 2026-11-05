@@ -1,14 +1,8 @@
 mod common;
 
 use std::fs;
-use std::process::Command;
 
-use common::{folder, home, nell, nell_with_stderr};
-
-/// Turns `/` into the platform's separator, the way the binary prints paths.
-fn native(text: &str) -> String {
-    text.replace('/', std::path::MAIN_SEPARATOR_STR)
-}
+use common::{folder, native, nell, nell_with_stderr};
 
 #[test]
 fn a_question_whose_words_are_in_one_file_ranks_that_file_first() {
@@ -68,15 +62,10 @@ fn exits_1_when_no_chunk_shares_a_word() {
 #[test]
 fn exits_2_and_says_to_run_init_when_nothing_is_indexed() {
     let folder = folder("meaning-empty");
-    let output = Command::new(env!("CARGO_BIN_EXE_nell"))
-        .current_dir(&folder)
-        .env("NELL_HOME", home(&folder))
-        .args(["--meaning", "token", "src"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
-    assert_eq!(String::from_utf8(output.stderr).unwrap(), "nell: nothing indexed yet, run nell init\n");
+    let (code, out, err) = nell_with_stderr(&folder, &["--meaning", "token", "src"]);
+    assert_eq!(code, 2);
+    assert_eq!(out, "");
+    assert_eq!(err, "nell: nothing indexed yet, run nell init\n");
 }
 
 #[test]

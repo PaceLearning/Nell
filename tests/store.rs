@@ -2,7 +2,7 @@ mod common;
 
 use std::fs;
 
-use common::{folder, home, nell, start, status_number};
+use common::{folder, home, native, nell, start, status_number};
 
 #[test]
 fn status_prints_the_store_file_and_its_counts() {
@@ -41,7 +41,7 @@ fn a_changed_file_is_read_and_stored_again() {
     let (code, out) = nell(&folder, &["validate_token", "src"]);
     let (_, after) = nell(&folder, &["status"]);
     assert_eq!(code, 0);
-    assert_eq!(out, "src/auth.rs:2:fn validate_token_twice() {}\n".replace('/', std::path::MAIN_SEPARATOR_STR));
+    assert_eq!(out, native("src/auth.rs:2:fn validate_token_twice() {}\n"));
     assert_eq!(status_number(&after, "files"), 2);
     assert!(status_number(&after, "bytes") > status_number(&before, "bytes"));
     assert!(status_number(&after, "dead bytes") > 0, "{after}");

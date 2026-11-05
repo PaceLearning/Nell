@@ -2,7 +2,9 @@
 
 /// A vector as 8 bit integers and the scale that turns them back into numbers.
 pub struct Quantized {
+    /// The number each integer is multiplied by to give the value back.
     pub scale: f32,
+    /// The values as 8 bit integers.
     pub values: Vec<i8>,
 }
 

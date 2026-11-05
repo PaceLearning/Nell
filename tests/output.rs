@@ -12,12 +12,6 @@ fn add_many_calls(folder: &Path) {
     fs::write(folder.join("src/second.rs"), &calls).unwrap();
 }
 
-/// The file part of each output line, in order, with `/` as the separator and no leading `./`.
-fn paths(out: &str) -> Vec<String> {
-    let paths = out.lines().map(|line| line.split(':').next().unwrap().replace('\\', "/"));
-    paths.map(|path| path.trim_start_matches("./").to_string()).collect()
-}
-
 #[test]
 fn definitions_come_first_then_source_then_tests() {
     let folder = folder("order");
@@ -28,7 +22,10 @@ fn definitions_come_first_then_source_then_tests() {
     fs::write(folder.join("src/Auth.cs"), "public static bool validate_token(string token) => true;\n").unwrap();
     let (code, out) = nell(&folder, &["validate_token"]);
     assert_eq!(code, 0);
-    let paths = paths(&out);
+    let paths: Vec<String> = out
+        .lines()
+        .map(|line| line.split(':').next().unwrap().replace('\\', "/").trim_start_matches("./").to_string())
+        .collect();
     assert_eq!(paths.len(), 6, "{out}");
     let mut definitions = paths[0..2].to_vec();
     definitions.sort();

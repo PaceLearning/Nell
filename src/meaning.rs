@@ -16,17 +16,23 @@ const B: f64 = 0.75;
 /// One chunk of a stored file: the path to print, the number of its first line counted from 1, its lines, and
 /// its vector when the store holds one.
 pub struct Chunk {
+    /// The path to print.
     pub path: PathBuf,
+    /// The number of its first line, counted from 1.
     pub first: usize,
+    /// Its lines.
     pub lines: Vec<String>,
+    /// Its vector, when the store holds one.
     pub vector: Option<Vec<f32>>,
 }
 
-/// A chunk that shares at least one word with the question, its score, and the number of its best line counted
-/// from 1.
+/// A chunk ranked against the question: the chunk, its score, and the number of its best line counted from 1.
 pub struct Ranked {
+    /// The chunk.
     pub chunk: Chunk,
+    /// Its score against the question, higher is closer.
     pub score: f64,
+    /// The number of its best line, counted from 1.
     pub line: usize,
 }
 

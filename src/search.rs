@@ -26,13 +26,17 @@ pub const COMMENT_STARTS: &[&str] = &["//", "#", "/*", "*", "---"];
 /// One line that matched: the line number counted from 1 and the line's text.
 #[derive(Clone)]
 pub struct Match {
+    /// The line number, counted from 1.
     pub line: usize,
+    /// The line's text.
     pub text: String,
 }
 
 /// The lines that matched in one file, in line order, and the lines around them that do not match.
 pub struct Group {
+    /// The file, as the walk gave it.
     pub path: PathBuf,
+    /// The lines that matched, in line order.
     pub matches: Vec<Match>,
     /// Every line that does not match and is at most the search's context lines away from a match, in line order.
     pub context: Vec<Match>,

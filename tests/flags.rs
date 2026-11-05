@@ -2,12 +2,7 @@ mod common;
 
 use std::fs;
 
-use common::{folder, nell};
-
-/// Turns `/` into the platform's separator, the way the binary prints paths.
-fn native(text: &str) -> String {
-    text.replace('/', std::path::MAIN_SEPARATOR_STR)
-}
+use common::{folder, native, nell};
 
 #[test]
 fn n_changes_nothing() {

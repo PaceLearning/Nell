@@ -36,7 +36,9 @@ pub const HEAD: usize = 5;
 /// A file's modified time as the store keeps it: whole seconds since 1970 and the nanoseconds past them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Modified {
+    /// Whole seconds since 1970.
     pub secs: u64,
+    /// The nanoseconds past those seconds.
     pub nanos: u32,
 }
 
@@ -54,27 +56,39 @@ impl Modified {
 /// length.
 #[derive(Clone, Debug)]
 pub struct Head {
+    /// The kind byte.
     pub kind: u8,
+    /// The path the record is for.
     pub path: String,
+    /// Its offset from the start of the store file.
     pub offset: usize,
+    /// Its whole length, head included.
     pub total: usize,
 }
 
 /// The vectors of one file version read from the store: the size and modified time of the version they were
 /// made for, how many numbers each has, and the bytes of all of them, a scale and the integers for each.
 pub struct Vectors<'a> {
+    /// The size of the version the vectors were made for.
     pub size: u64,
+    /// The modified time of the version the vectors were made for.
     pub modified: Modified,
+    /// How many numbers each vector has.
     pub dimensions: usize,
+    /// Each vector as a scale and its integers.
     pub bytes: &'a [u8],
 }
 
 /// A text record read from the store, borrowing the mapped bytes. The path is the index key that found it. The
 /// vectors are there when the store holds them for this version.
 pub struct Record<'a> {
+    /// The size the file had on disk.
     pub size: u64,
+    /// The modified time the file had on disk.
     pub modified: Modified,
+    /// The file's text.
     pub text: &'a str,
+    /// The vectors, when the store holds them for this version.
     pub vectors: Option<Vectors<'a>>,
     starts: &'a [u8],
     chunks: &'a [u8],

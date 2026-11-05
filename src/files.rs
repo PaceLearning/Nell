@@ -14,9 +14,13 @@ use crate::vector::{self, Quantized};
 /// A file the store holds, by the key and the size and modified time it was stored under, and whether this
 /// process read it from disk and stored it.
 pub struct Kept {
+    /// The store key, the path from the repository root.
     pub key: String,
+    /// The size the file was stored under.
     pub size: u64,
+    /// The modified time the file was stored under.
     pub modified: Modified,
+    /// Whether this process read the file from disk and stored it.
     pub stored: bool,
 }
 

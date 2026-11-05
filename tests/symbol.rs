@@ -3,12 +3,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{folder, nell, status_number};
-
-/// Turns `/` into the platform's separator, the way the binary prints paths.
-fn native(text: &str) -> String {
-    text.replace('/', std::path::MAIN_SEPARATOR_STR)
-}
+use common::{folder, native, nell, status_number};
 
 /// Adds a caller before the definition in walk order, with a comment, a use, and a longer name that holds the
 /// symbol and must not match.

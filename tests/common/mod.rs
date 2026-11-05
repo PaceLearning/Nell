@@ -80,6 +80,11 @@ pub fn nell_with_model(folder: &Path, arguments: &[&str]) -> (i32, String, Strin
     (output.status.code().unwrap(), out, err)
 }
 
+/// Turns / into the platform's separator, the way the binary prints paths.
+pub fn native(text: &str) -> String {
+    text.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 /// Reads one number from `nell status` output, by the label before the colon.
 pub fn status_number(status: &str, label: &str) -> u64 {
     let line = status.lines().find(|line| line.starts_with(&format!("{label}: "))).unwrap();

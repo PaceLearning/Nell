@@ -1,13 +1,13 @@
 mod common;
 
-use common::{folder, nell};
+use common::{folder, native, nell};
 
 #[test]
 fn prints_path_line_and_text_for_each_match() {
     let folder = folder("match");
     let (code, out) = nell(&folder, &["validate_token", "src"]);
     assert_eq!(code, 0);
-    assert_eq!(out, "src/auth.rs:1:fn validate_token() {}\n".replace('/', std::path::MAIN_SEPARATOR_STR));
+    assert_eq!(out, native("src/auth.rs:1:fn validate_token() {}\n"));
 }
 
 #[test]

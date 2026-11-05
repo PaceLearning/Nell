@@ -24,7 +24,12 @@ pub enum ModelError {
     /// The model could not turn the texts into vectors.
     Embed(fastembed::Error),
     /// The model gave back a different number of vectors than texts.
-    Count { asked: usize, given: usize },
+    Count {
+        /// How many texts were given.
+        asked: usize,
+        /// How many vectors came back.
+        given: usize,
+    },
 }
 
 impl fmt::Display for ModelError {
