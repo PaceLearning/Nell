@@ -24,6 +24,18 @@ See what Nell holds:
 nell status
 ```
 
+Index a repository once, so that every later search, from any agent, reads from the store and can search by meaning. This is the one slow command, tens of seconds for a large repository:
+
+```
+nell init
+```
+
+Bring the store up to date after files have changed, such as after a pull. It does only the files that changed or are new:
+
+```
+nell update
+```
+
 ## What happens on a search
 
 1. Nell opens the store, one file shared by every `nell` process on the machine.
