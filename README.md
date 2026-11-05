@@ -32,6 +32,8 @@ Search by meaning. Nell answers from the files it has already read:
 nell --meaning "where a token is checked before a request is served" src/
 ```
 
+It prints the 10 closest places, best first, as `path:line:text`. `--limit` and `--all` change the count. It answers only from what the store holds, so run `nell init` first. For now a place is scored by the words it shares with the question, with names such as `ValidateToken` split into `validate` and `token`.
+
 See what Nell holds:
 
 ```

@@ -167,6 +167,11 @@ impl Store {
         &self.root
     }
 
+    /// Whether the store holds any version of `path`.
+    pub fn knows(&self, path: &str) -> bool {
+        self.index.contains_key(path)
+    }
+
     /// The latest record of `path`, when it was stored with the same size and modified time.
     pub fn held(&self, path: &str, size: u64, modified: Modified) -> Option<Record<'_>> {
         let head = self.index.get(path)?;

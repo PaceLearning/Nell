@@ -1,7 +1,9 @@
 mod files;
+mod meaning;
 mod record;
 mod search;
 mod store;
+mod words;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -12,7 +14,7 @@ use store::Store;
 
 const USAGE: &str = "\
 Usage: nell [-inlcw] [-C <lines>] [--all | --limit <lines>] <pattern> [path...]
-       nell --meaning <question> [path...]
+       nell --meaning <question> [--all | --limit <lines>] [path...]
        nell init | update | status
 
 Search files the way grep does. Every file read is kept in a shared store,
@@ -27,10 +29,16 @@ so the next search reads it from there, and can search it by meaning.
 
 A search prints at most 50 matches, definitions first and tests last.
 --limit sets that bound and --all prints every match.
+
+A search by meaning answers from what nell init stored, and prints the
+10 closest places, best first. --limit and --all change the count.
 ";
 
 /// How many lines a text search prints when neither --all nor --limit is given.
 const DEFAULT_LIMIT: usize = 50;
+
+/// How many places a search by meaning prints when neither --all nor --limit is given.
+const MEANING_LIMIT: usize = 10;
 
 fn main() -> ExitCode {
     let mut ignore_case = false;
@@ -38,7 +46,9 @@ fn main() -> ExitCode {
     let mut files_only = false;
     let mut count_only = false;
     let mut context: Option<usize> = None;
-    let mut limit = Some(DEFAULT_LIMIT);
+    // Nothing when neither --all nor --limit was given, so each kind of search can use its own default.
+    let mut limit: Option<Option<usize>> = None;
+    let mut meaning: Option<String> = None;
     let mut words: Vec<String> = Vec::new();
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -81,7 +91,7 @@ fn main() -> ExitCode {
             continue;
         }
         if argument == "--all" {
-            limit = None;
+            limit = Some(None);
             continue;
         }
         if argument == "--limit" {
@@ -89,11 +99,73 @@ fn main() -> ExitCode {
                 eprintln!("nell: --limit needs a whole number of lines");
                 return ExitCode::from(2);
             };
-            limit = Some(lines);
+            limit = Some(Some(lines));
+            continue;
+        }
+        if argument == "--meaning" {
+            let Some(question) = arguments.next() else {
+                eprintln!("nell: --meaning needs a question");
+                return ExitCode::from(2);
+            };
+            meaning = Some(question);
             continue;
         }
         words.push(argument);
     }
+    if let Some(question) = meaning {
+        let mut paths = words;
+        if paths.is_empty() {
+            paths.push(".".to_string());
+        }
+        let opened = store::root_of(Path::new(&paths[0])).and_then(|root| Store::open(&root));
+        let mut store = match opened {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("nell: {error}");
+                return ExitCode::from(2);
+            }
+        };
+        let mut chunks = Vec::new();
+        for entry in files::walk(Path::new(&paths[0]), &paths[1..]) {
+            let Ok(entry) = entry else { continue };
+            let Some(key) = files::key(&store, entry.path()) else { continue };
+            // Only what the store already holds is searched. A held file that changed on disk is stored again
+            // first, so the lines printed are the lines on disk.
+            if !store.knows(&key) {
+                continue;
+            }
+            let kept = match files::keep(&mut store, &entry) {
+                Ok(kept) => kept,
+                Err(error) => {
+                    eprintln!("nell: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(kept) = kept else { continue };
+            let Some(record) = store.held(&kept.key, kept.size, kept.modified) else { continue };
+            let lines: Vec<&str> = record.lines().collect();
+            for (first, last) in record.chunks() {
+                let Some(text) = lines.get(first.saturating_sub(1)..last) else { continue };
+                let lines = text.iter().map(|line| line.to_string()).collect();
+                chunks.push(meaning::Chunk { path: entry.path().to_path_buf(), first, lines });
+            }
+        }
+        if chunks.is_empty() {
+            eprintln!("nell: nothing indexed yet, run nell init");
+            return ExitCode::from(2);
+        }
+        let ranked = meaning::rank(&question, chunks);
+        if ranked.is_empty() {
+            return ExitCode::from(1);
+        }
+        let count = limit.unwrap_or(Some(MEANING_LIMIT)).unwrap_or(ranked.len());
+        for item in ranked.iter().take(count) {
+            let text = item.chunk.lines.get(item.line - item.chunk.first).map_or("", String::as_str);
+            println!("{}:{}:{}", item.chunk.path.display(), item.line, text);
+        }
+        return ExitCode::SUCCESS;
+    }
+    let limit = limit.unwrap_or(Some(DEFAULT_LIMIT));
     if words.is_empty() {
         eprint!("{USAGE}");
         return ExitCode::from(2);

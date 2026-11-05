@@ -70,6 +70,17 @@ impl<'a> Record<'a> {
     pub fn chunk_count(&self) -> usize {
         self.chunks.len() / 8
     }
+
+    /// Each chunk as its first and last line, counted from 1.
+    pub fn chunks(&self) -> Vec<(usize, usize)> {
+        let mut chunks = Vec::with_capacity(self.chunk_count());
+        for index in 0..self.chunk_count() {
+            let Some(first) = u32_at(self.chunks, index * 8) else { break };
+            let Some(last) = u32_at(self.chunks, index * 8 + 4) else { break };
+            chunks.push((first as usize, last as usize));
+        }
+        chunks
+    }
 }
 
 /// Walks the lines of a stored text from its line starts.
