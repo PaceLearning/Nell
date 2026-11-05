@@ -34,6 +34,14 @@ nell --meaning "where a token is checked before a request is served" src/
 
 It prints the 10 closest places, best first, as `path:line:text`. `--limit` and `--all` change the count. It answers only from what the store holds, so run `nell init` first. A place is ranked by how close its vector is to the question's, both from a small local model. When the store has no vectors yet, or the model cannot be loaded, Nell says so on stderr and ranks by the words a place shares with the question instead, with names such as `ValidateToken` split into `validate` and `token`.
 
+Search by symbol. Nell finds the name as a whole word and prints where it is defined first, then where it is used, then the lines that are only comments:
+
+```
+nell --symbol ValidateToken src/
+```
+
+Each of the three is in the order the files were walked, grouped by file, as `path:line:text`. The bound, `--limit`, `--all`, `-i`, `-l`, `-c` and `-C` work as they do in a text search. A line is only a comment when it starts with `//`, `#`, `/*`, `*` or `---`.
+
 See what Nell holds:
 
 ```

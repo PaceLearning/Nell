@@ -19,6 +19,7 @@ use store::Store;
 const USAGE: &str = "\
 Usage: nell [-inlcw] [-C <lines>] [--all | --limit <lines>] <pattern> [path...]
        nell --meaning <question> [--all | --limit <lines>] [path...]
+       nell --symbol <name> [-ilc] [-C <lines>] [--all | --limit <lines>] [path...]
        nell init | update | status
 
 Search files the way grep does. Every file read is kept in a shared store,
@@ -36,6 +37,9 @@ A search prints at most 50 matches, definitions first and tests last.
 
 A search by meaning answers from what nell init stored, and prints the
 10 closest places, best first. --limit and --all change the count.
+
+A search by symbol matches the name as a whole word and prints the lines
+that define it first, then the lines that use it, then comments.
 ";
 
 /// How many lines a text search prints when neither --all nor --limit is given.
@@ -57,6 +61,7 @@ fn main() -> ExitCode {
     // Nothing when neither --all nor --limit was given, so each kind of search can use its own default.
     let mut limit: Option<Option<usize>> = None;
     let mut meaning: Option<String> = None;
+    let mut symbol: Option<String> = None;
     let mut words: Vec<String> = Vec::new();
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -118,7 +123,19 @@ fn main() -> ExitCode {
             meaning = Some(question);
             continue;
         }
+        if argument == "--symbol" {
+            let Some(name) = arguments.next() else {
+                eprintln!("nell: --symbol needs a name");
+                return ExitCode::from(2);
+            };
+            symbol = Some(name);
+            continue;
+        }
         words.push(argument);
+    }
+    if meaning.is_some() && symbol.is_some() {
+        eprintln!("nell: --meaning and --symbol cannot be used together");
+        return ExitCode::from(2);
     }
     if let Some(question) = meaning {
         let mut paths = words;
@@ -232,11 +249,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let limit = limit.unwrap_or(Some(DEFAULT_LIMIT));
+    // A search by symbol is a text search for the name, so every word after it is a path, even status or init.
+    let by_symbol = symbol.is_some();
+    if let Some(name) = symbol {
+        words.insert(0, name);
+    }
     if words.is_empty() {
         eprint!("{USAGE}");
         return ExitCode::from(2);
     }
-    if words.len() == 1 && words[0] == "status" {
+    if !by_symbol && words.len() == 1 && words[0] == "status" {
         let opened = store::root_of(Path::new(".")).and_then(|root| Store::open(&root));
         let store = match opened {
             Ok(store) => store,
@@ -254,7 +276,7 @@ fn main() -> ExitCode {
         println!("dead bytes: {}", status.dead_bytes);
         return ExitCode::SUCCESS;
     }
-    if words.len() == 1 && (words[0] == "init" || words[0] == "update") {
+    if !by_symbol && words.len() == 1 && (words[0] == "init" || words[0] == "update") {
         let started = Instant::now();
         let opened = store::root_of(Path::new(".")).and_then(|root| Store::open(&root));
         let mut store = match opened {
@@ -312,7 +334,8 @@ fn main() -> ExitCode {
     if paths.is_empty() {
         paths.push(".".to_string());
     }
-    let search = match Search::create(&pattern, paths.clone(), ignore_case, whole_word, context.unwrap_or(0)) {
+    let created = Search::create(&pattern, paths.clone(), ignore_case, whole_word, context.unwrap_or(0), by_symbol);
+    let search = match created {
         Ok(search) => search,
         Err(error) => {
             eprintln!("nell: {error}");
@@ -337,21 +360,31 @@ fn main() -> ExitCode {
     if found.is_empty() {
         return ExitCode::from(1);
     }
+    // A search by symbol can give one file a group of definitions, one of uses and one of comments, so -l, -c
+    // and the closing line count each file once, at its first group.
+    let mut counts: Vec<(&Path, usize)> = Vec::new();
+    for group in &found {
+        if let Some(at) = counts.iter().position(|(path, _)| *path == group.path) {
+            counts[at].1 += group.matches.len();
+            continue;
+        }
+        counts.push((&group.path, group.matches.len()));
+    }
     if files_only {
-        for group in &found {
-            println!("{}", group.path.display());
+        for (path, _) in &counts {
+            println!("{}", path.display());
         }
         return ExitCode::SUCCESS;
     }
     if count_only {
-        for group in &found {
-            println!("{}:{}", group.path.display(), group.matches.len());
+        for (path, count) in &counts {
+            println!("{}:{count}", path.display());
         }
         return ExitCode::SUCCESS;
     }
     let mut printed = 0;
     let mut more_matches = 0;
-    let mut more_files = 0;
+    let mut cut_files: Vec<&Path> = Vec::new();
     // The last line printed with context on, as the group it came from and its line number, to know where a
     // `--` goes.
     let mut last: Option<(usize, usize)> = None;
@@ -394,9 +427,12 @@ fn main() -> ExitCode {
         let cut = group.matches.len() - shown;
         if cut > 0 {
             more_matches += cut;
-            more_files += 1;
+        }
+        if cut > 0 && !cut_files.contains(&group.path.as_path()) {
+            cut_files.push(&group.path);
         }
     }
+    let more_files = cut_files.len();
     if more_matches > 0 {
         println!("{more_matches} more matches in {more_files} files, --all prints them");
     }
