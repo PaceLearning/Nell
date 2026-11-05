@@ -1,14 +1,18 @@
 mod files;
 mod meaning;
+mod model;
 mod record;
 mod search;
 mod store;
+mod vector;
 mod words;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use files::Kept;
+use model::Model;
 use search::{Match, Search};
 use store::Store;
 
@@ -39,6 +43,10 @@ const DEFAULT_LIMIT: usize = 50;
 
 /// How many places a search by meaning prints when neither --all nor --limit is given.
 const MEANING_LIMIT: usize = 10;
+
+/// The most chunks without a vector that a search by meaning embeds before it answers. With more than this it
+/// answers with the vectors it has and says to run nell update.
+const MEANING_EMBED_LIMIT: usize = 300;
 
 fn main() -> ExitCode {
     let mut ignore_case = false;
@@ -125,36 +133,94 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        let mut chunks = Vec::new();
+        // Only what the store already holds is searched. A held file that changed on disk is stored again
+        // first, so the lines printed are the lines on disk; its new chunks have no vectors yet.
+        let mut shown: Vec<PathBuf> = Vec::new();
+        let mut kept: Vec<Kept> = Vec::new();
         for entry in files::walk(Path::new(&paths[0]), &paths[1..]) {
             let Ok(entry) = entry else { continue };
             let Some(key) = files::key(&store, entry.path()) else { continue };
-            // Only what the store already holds is searched. A held file that changed on disk is stored again
-            // first, so the lines printed are the lines on disk.
             if !store.knows(&key) {
                 continue;
             }
-            let kept = match files::keep(&mut store, &entry) {
-                Ok(kept) => kept,
+            let file = match files::keep(&mut store, &entry) {
+                Ok(file) => file,
                 Err(error) => {
                     eprintln!("nell: {error}");
                     return ExitCode::from(2);
                 }
             };
-            let Some(kept) = kept else { continue };
-            let Some(record) = store.held(&kept.key, kept.size, kept.modified) else { continue };
-            let lines: Vec<&str> = record.lines().collect();
-            for (first, last) in record.chunks() {
-                let Some(text) = lines.get(first.saturating_sub(1)..last) else { continue };
-                let lines = text.iter().map(|line| line.to_string()).collect();
-                chunks.push(meaning::Chunk { path: entry.path().to_path_buf(), first, lines });
+            let Some(file) = file else { continue };
+            shown.push(entry.path().to_path_buf());
+            kept.push(file);
+        }
+        let mut any_chunk = false;
+        let mut missing_files = 0;
+        let mut missing_chunks = 0;
+        for file in &kept {
+            let Some(record) = store.held(&file.key, file.size, file.modified) else { continue };
+            let missing = record.chunk_count().saturating_sub(record.vector_count());
+            if record.chunk_count() > 0 {
+                any_chunk = true;
+            }
+            if missing > 0 {
+                missing_files += 1;
+                missing_chunks += missing;
             }
         }
-        if chunks.is_empty() {
+        if !any_chunk {
             eprintln!("nell: nothing indexed yet, run nell init");
             return ExitCode::from(2);
         }
-        let ranked = meaning::rank(&question, chunks);
+        let mut model: Option<Model> = None;
+        let has_vectors = store.status().vectors > 0;
+        if !has_vectors {
+            eprintln!("nell: the store has no vectors yet, run nell init; answering by shared words");
+        }
+        if has_vectors {
+            match Model::load(store.folder()) {
+                Ok(loaded) => model = Some(loaded),
+                Err(error) => eprintln!("nell: {error}; answering by shared words"),
+            }
+        }
+        let mut asked: Option<Vec<f32>> = None;
+        if let Some(model) = &mut model {
+            match model.embed(std::slice::from_ref(&question)) {
+                Ok(mut vectors) => asked = vectors.pop(),
+                Err(error) => eprintln!("nell: {error}; answering by shared words"),
+            }
+        }
+        if asked.is_some() && missing_chunks > MEANING_EMBED_LIMIT {
+            eprintln!("nell: {missing_files} files changed since the store was indexed, run nell update");
+        }
+        if asked.is_some()
+            && missing_chunks > 0
+            && missing_chunks <= MEANING_EMBED_LIMIT
+            && let Some(model) = &mut model
+            && let Err(error) = files::embed(&mut store, model, &kept)
+        {
+            eprintln!("nell: {error}");
+            return ExitCode::from(2);
+        }
+        let mut chunks = Vec::new();
+        for (path, file) in shown.iter().zip(&kept) {
+            let Some(record) = store.held(&file.key, file.size, file.modified) else { continue };
+            let lines: Vec<&str> = record.lines().collect();
+            for (index, (first, last)) in record.chunks().into_iter().enumerate() {
+                let Some(text) = lines.get(first.saturating_sub(1)..last) else { continue };
+                let lines = text.iter().map(|line| line.to_string()).collect();
+                let vector = record.vector(index);
+                chunks.push(meaning::Chunk { path: path.clone(), first, lines, vector });
+            }
+        }
+        if asked.is_some() && !chunks.iter().any(|chunk| chunk.vector.is_some()) {
+            eprintln!("nell: no vectors under these paths yet; answering by shared words");
+            asked = None;
+        }
+        let ranked = match &asked {
+            Some(asked) => meaning::rank_by_vectors(&question, asked, chunks),
+            None => meaning::rank(&question, chunks),
+        };
         if ranked.is_empty() {
             return ExitCode::from(1);
         }
@@ -183,11 +249,12 @@ fn main() -> ExitCode {
         println!("store: {}", status.path.display());
         println!("files: {}", status.files);
         println!("chunks: {}", status.chunks);
+        println!("vectors: {}", status.vectors);
         println!("bytes: {}", status.bytes);
         println!("dead bytes: {}", status.dead_bytes);
         return ExitCode::SUCCESS;
     }
-    if words.len() == 1 && words[0] == "init" {
+    if words.len() == 1 && (words[0] == "init" || words[0] == "update") {
         let started = Instant::now();
         let opened = store::root_of(Path::new(".")).and_then(|root| Store::open(&root));
         let mut store = match opened {
@@ -197,29 +264,47 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        if let Err(error) = store.clear() {
+        // init starts the store over, so every file is new to it. update keeps what has not changed.
+        if words[0] == "init" && let Err(error) = store.clear() {
             eprintln!("nell: {error}");
             return ExitCode::from(2);
         }
         let root = store.root().to_path_buf();
+        let mut kept: Vec<Kept> = Vec::new();
         let mut file_count = 0;
         let mut chunk_count = 0;
         for entry in files::walk(&root, &[]) {
             let Ok(entry) = entry else { continue };
-            let kept = match files::keep(&mut store, &entry) {
-                Ok(kept) => kept,
+            let file = match files::keep(&mut store, &entry) {
+                Ok(file) => file,
                 Err(error) => {
                     eprintln!("nell: {error}");
                     return ExitCode::from(2);
                 }
             };
-            let Some(kept) = kept else { continue };
-            let Some(record) = store.held(&kept.key, kept.size, kept.modified) else { continue };
-            file_count += 1;
-            chunk_count += record.chunk_count();
+            let Some(file) = file else { continue };
+            let Some(record) = store.held(&file.key, file.size, file.modified) else { continue };
+            if file.stored {
+                file_count += 1;
+                chunk_count += record.chunk_count();
+            }
+            kept.push(file);
+        }
+        // The model is loaded once, after every file is stored, and gives a vector to each chunk without one:
+        // the chunks stored just now and any that a text search left without.
+        let mut vector_count = 0;
+        match Model::load(store.folder()) {
+            Ok(mut model) => match files::embed(&mut store, &mut model, &kept) {
+                Ok(made) => vector_count = made,
+                Err(error) => {
+                    eprintln!("nell: {error}");
+                    return ExitCode::from(2);
+                }
+            },
+            Err(error) => eprintln!("nell: no vectors made, {error}; run nell update once the model loads"),
         }
         let seconds = started.elapsed().as_secs_f64();
-        println!("{file_count} files, {chunk_count} chunks, {seconds:.1} seconds");
+        println!("{file_count} files, {chunk_count} chunks, {vector_count} vectors, {seconds:.1} seconds");
         return ExitCode::SUCCESS;
     }
     let pattern = words.remove(0);

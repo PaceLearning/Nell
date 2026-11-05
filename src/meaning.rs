@@ -1,8 +1,10 @@
-//! Search by meaning. For now a chunk is scored by the words it shares with the question.
+//! Search by meaning: chunks ranked by the cosine between their vector and the question's, or, when there are
+//! no vectors to compare, by the words they share with the question.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use crate::vector;
 use crate::words;
 
 /// How fast more of the same word stops adding to a chunk's score.
@@ -11,11 +13,13 @@ const K1: f64 = 1.2;
 /// How much a long chunk is held back against a short one.
 const B: f64 = 0.75;
 
-/// One chunk of a stored file: the path to print, the number of its first line counted from 1, and its lines.
+/// One chunk of a stored file: the path to print, the number of its first line counted from 1, its lines, and
+/// its vector when the store holds one.
 pub struct Chunk {
     pub path: PathBuf,
     pub first: usize,
     pub lines: Vec<String>,
+    pub vector: Option<Vec<f32>>,
 }
 
 /// A chunk that shares at least one word with the question, its score, and the number of its best line counted
@@ -81,6 +85,36 @@ pub fn rank(question: &str, chunks: Vec<Chunk>) -> Vec<Ranked> {
             }
         }
         let line = chunk.first + best;
+        ranked.push(Ranked { chunk, score, line });
+    }
+    ranked.sort_by(|left, right| right.score.total_cmp(&left.score));
+    ranked
+}
+
+/// Ranks the chunks that have a vector against `asked`, the question's vector, best first, by the cosine
+/// between the two. A chunk without a vector is left out. A chunk's best line is the one with the most of the
+/// question's words, the first one on a tie, and the first line that is not blank when no line shares a word.
+/// Chunks with the same score keep the order they were given in.
+pub fn rank_by_vectors(question: &str, asked: &[f32], chunks: Vec<Chunk>) -> Vec<Ranked> {
+    let words: HashSet<String> = words::split(question).into_iter().collect();
+    let mut ranked = Vec::new();
+    for chunk in chunks {
+        let Some(vector) = &chunk.vector else { continue };
+        let score = vector::cosine(asked, vector) as f64;
+        let mut best: Option<usize> = None;
+        let mut best_shared = 0;
+        for (index, line) in chunk.lines.iter().enumerate() {
+            let split = words::split(line);
+            let shared: HashSet<&str> = split.iter().map(String::as_str).filter(|word| words.contains(*word)).collect();
+            if shared.len() > best_shared {
+                best = Some(index);
+                best_shared = shared.len();
+            }
+        }
+        if best.is_none() {
+            best = chunk.lines.iter().position(|line| !line.trim().is_empty());
+        }
+        let line = chunk.first + best.unwrap_or(0);
         ranked.push(Ranked { chunk, score, line });
     }
     ranked.sort_by(|left, right| right.score.total_cmp(&left.score));

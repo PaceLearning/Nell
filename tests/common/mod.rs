@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 
 /// Makes a fresh folder with a small tree to search, and an empty store home beside it.
 pub fn folder(name: &str) -> PathBuf {
@@ -22,13 +22,17 @@ pub fn home(folder: &Path) -> PathBuf {
     folder.with_file_name(format!("{}-home", folder.file_name().unwrap().to_string_lossy()))
 }
 
-/// Starts the binary in `folder` with its store in `home(folder)`, and returns it still running.
+/// Starts the binary in `folder` with its store in `home(folder)`, and returns it still running. The model
+/// download is pointed at a closed port, so no test fetches the model by accident; `nell_with_model` is for the
+/// tests that mean to.
 pub fn start(folder: &Path, arguments: &[&str]) -> Child {
     Command::new(env!("CARGO_BIN_EXE_nell"))
         .current_dir(folder)
         .env("NELL_HOME", home(folder))
+        .env("HF_ENDPOINT", "http://127.0.0.1:1")
         .args(arguments)
-        .stdout(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap()
 }
@@ -37,6 +41,43 @@ pub fn start(folder: &Path, arguments: &[&str]) -> Child {
 pub fn nell(folder: &Path, arguments: &[&str]) -> (i32, String) {
     let output = start(folder, arguments).wait_with_output().unwrap();
     (output.status.code().unwrap(), String::from_utf8(output.stdout).unwrap())
+}
+
+/// Runs the binary the way `nell` does, and returns the exit code, stdout and stderr.
+pub fn nell_with_stderr(folder: &Path, arguments: &[&str]) -> (i32, String, String) {
+    let output = start(folder, arguments).wait_with_output().unwrap();
+    let out = String::from_utf8(output.stdout).unwrap();
+    let err = String::from_utf8(output.stderr).unwrap();
+    (output.status.code().unwrap(), out, err)
+}
+
+/// Whether the tests that need the model should run: only when NELL_TEST_MODEL is set, because the first run
+/// downloads the model. Prints why when they do not.
+pub fn wants_model() -> bool {
+    if std::env::var_os("NELL_TEST_MODEL").is_some() {
+        return true;
+    }
+    println!("skipped: set NELL_TEST_MODEL to run the tests that load the model");
+    false
+}
+
+/// One store home shared by every test that loads the model, kept between runs so the model is downloaded once.
+pub fn model_home() -> PathBuf {
+    std::env::temp_dir().join("nell-test-model-home")
+}
+
+/// Runs the binary in `folder` with its store in `model_home()` and the model download allowed, and returns the
+/// exit code, stdout and stderr.
+pub fn nell_with_model(folder: &Path, arguments: &[&str]) -> (i32, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_nell"))
+        .current_dir(folder)
+        .env("NELL_HOME", model_home())
+        .args(arguments)
+        .output()
+        .unwrap();
+    let out = String::from_utf8(output.stdout).unwrap();
+    let err = String::from_utf8(output.stderr).unwrap();
+    (output.status.code().unwrap(), out, err)
 }
 
 /// Reads one number from `nell status` output, by the label before the colon.

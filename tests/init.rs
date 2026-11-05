@@ -3,7 +3,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{folder, nell, status_number};
+use common::{folder, nell, nell_with_stderr, status_number};
 
 /// Adds two 64 line files to a test folder. In `long.rs` line 23 is blank, inside the last third of the first
 /// 32 lines, so its chunks are 1 to 23, 24 to 55 and 56 to 64. In `plain.rs` line 10 is blank, too early to
@@ -27,6 +27,19 @@ fn init_prints_the_files_and_chunks_it_stored() {
     assert!(out.starts_with("4 files, 7 chunks, "), "{out}");
     assert!(out.ends_with(" seconds\n"), "{out}");
     assert_eq!(out.lines().count(), 1, "{out}");
+}
+
+#[test]
+fn init_without_the_model_fills_the_store_and_says_so() {
+    let folder = folder("init-no-model");
+    let (code, out, err) = nell_with_stderr(&folder, &["init"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("2 files, 2 chunks, 0 vectors, "), "{out}");
+    assert!(err.starts_with("nell: no vectors made, the model could not be loaded"), "{err}");
+    assert!(err.ends_with("run nell update once the model loads\n"), "{err}");
+    let (_, status) = nell(&folder, &["status"]);
+    assert_eq!(status_number(&status, "chunks"), 2, "{status}");
+    assert_eq!(status_number(&status, "vectors"), 0, "{status}");
 }
 
 #[test]

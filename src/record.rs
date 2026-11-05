@@ -6,17 +6,26 @@
 //! Kind 2 is a file's text: the path relative to the repository root, the size and modified time the file had
 //! on disk, the text, the start of every line, and the chunks, each as its first and last line counted from 1.
 //! Kind 3 starts the store over: every record before it is dead. Its path is empty.
+//! Kind 4 is the vectors of a file version, one per chunk: the path, the size and modified time of the version
+//! they were made for, how many numbers a vector has, how many vectors there are, then each vector as a scale
+//! and that many 8 bit integers. It is written after the text record of its version, and it is read only while
+//! that version is the latest one.
 //!
 //! Kind 1 was a file's text without chunks. Nell no longer reads it, so such a file counts as not held and is
 //! read from disk and stored again.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::vector::{self, Quantized};
+
 /// The kind byte of a record that holds a file's text and its chunks.
 pub const KIND_TEXT: u8 = 2;
 
 /// The kind byte of a record that marks every record before it as dead.
 pub const KIND_CLEAR: u8 = 3;
+
+/// The kind byte of a record that holds one vector per chunk of a file version.
+pub const KIND_VECTORS: u8 = 4;
 
 /// The most lines in one chunk.
 pub const CHUNK_LINES: usize = 32;
@@ -51,16 +60,46 @@ pub struct Head {
     pub total: usize,
 }
 
-/// A text record read from the store, borrowing the mapped bytes. The path is the index key that found it.
+/// The vectors of one file version read from the store: the size and modified time of the version they were
+/// made for, how many numbers each has, and the bytes of all of them, a scale and the integers for each.
+pub struct Vectors<'a> {
+    pub size: u64,
+    pub modified: Modified,
+    pub dimensions: usize,
+    pub bytes: &'a [u8],
+}
+
+/// A text record read from the store, borrowing the mapped bytes. The path is the index key that found it. The
+/// vectors are there when the store holds them for this version.
 pub struct Record<'a> {
     pub size: u64,
     pub modified: Modified,
     pub text: &'a str,
+    pub vectors: Option<Vectors<'a>>,
     starts: &'a [u8],
     chunks: &'a [u8],
 }
 
 impl<'a> Record<'a> {
+    /// How many chunks have a vector. Every chunk has one or none has.
+    pub fn vector_count(&self) -> usize {
+        let Some(vectors) = &self.vectors else { return 0 };
+        if vectors.dimensions == 0 {
+            return 0;
+        }
+        vectors.bytes.len() / (4 + vectors.dimensions)
+    }
+
+    /// The vector of the chunk at `index`, as numbers again, or nothing when that chunk has none.
+    pub fn vector(&self, index: usize) -> Option<Vec<f32>> {
+        let vectors = self.vectors.as_ref()?;
+        let stride = 4 + vectors.dimensions;
+        let bytes = vectors.bytes.get(index * stride..(index + 1) * stride)?;
+        let scale = f32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?);
+        let values: Vec<i8> = bytes.get(4..)?.iter().map(|&byte| byte as i8).collect();
+        Some(vector::dequantize(scale, &values))
+    }
+
     /// The lines of the text, the way `str::lines` gives them, read from the stored line starts.
     pub fn lines(&self) -> Lines<'a> {
         Lines { text: self.text, starts: self.starts, index: 0 }
@@ -173,6 +212,31 @@ pub fn encode(path: &str, size: u64, modified: Modified, text: &str) -> Vec<u8> 
     bytes
 }
 
+/// Builds the bytes of a vectors record for the version of `path` that had `size` and `modified` on disk. Every
+/// vector is written with as many numbers as the first one has: a shorter one is padded with zeros and a longer
+/// one is cut.
+pub fn encode_vectors(path: &str, size: u64, modified: Modified, vectors: &[Quantized]) -> Vec<u8> {
+    let dimensions = vectors.first().map_or(0, |vector| vector.values.len());
+    let body = 4 + path.len() + 8 + 8 + 4 + 4 + 4 + vectors.len() * (4 + dimensions);
+    let mut bytes = Vec::with_capacity(HEAD + body);
+    bytes.push(KIND_VECTORS);
+    bytes.extend_from_slice(&(body as u32).to_le_bytes());
+    bytes.extend_from_slice(&(path.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(path.as_bytes());
+    bytes.extend_from_slice(&size.to_le_bytes());
+    bytes.extend_from_slice(&modified.secs.to_le_bytes());
+    bytes.extend_from_slice(&modified.nanos.to_le_bytes());
+    bytes.extend_from_slice(&(dimensions as u32).to_le_bytes());
+    bytes.extend_from_slice(&(vectors.len() as u32).to_le_bytes());
+    for vector in vectors {
+        bytes.extend_from_slice(&vector.scale.to_le_bytes());
+        let values = vector.values.iter().take(dimensions).map(|&value| value as u8);
+        let missing = dimensions.saturating_sub(vector.values.len());
+        bytes.extend(values.chain(std::iter::repeat_n(0, missing)));
+    }
+    bytes
+}
+
 /// Builds the bytes of a record that starts the store over.
 pub fn encode_clear() -> Vec<u8> {
     let mut bytes = Vec::with_capacity(HEAD + 4);
@@ -224,5 +288,23 @@ pub fn read(bytes: &[u8], offset: usize) -> Option<Record<'_>> {
     let at = at + 4 + count * 4;
     let count = u32_at(body, at)? as usize;
     let chunks = body.get(at + 4..at + 4 + count * 8)?;
-    Some(Record { size, modified: Modified { secs, nanos }, text, starts, chunks })
+    Some(Record { size, modified: Modified { secs, nanos }, text, vectors: None, starts, chunks })
+}
+
+/// Reads the vectors record at `offset`, or nothing when the bytes there are not a whole vectors record.
+pub fn read_vectors(bytes: &[u8], offset: usize) -> Option<Vectors<'_>> {
+    if *bytes.get(offset)? != KIND_VECTORS {
+        return None;
+    }
+    let length = u32_at(bytes, offset + 1)? as usize;
+    let body = bytes.get(offset + HEAD..offset + HEAD + length)?;
+    let path_len = u32_at(body, 0)? as usize;
+    let at = 4 + path_len;
+    let size = u64_at(body, at)?;
+    let secs = u64_at(body, at + 8)?;
+    let nanos = u32_at(body, at + 16)?;
+    let dimensions = u32_at(body, at + 20)? as usize;
+    let count = u32_at(body, at + 24)? as usize;
+    let bytes = body.get(at + 28..at + 28 + count * (4 + dimensions))?;
+    Some(Vectors { size, modified: Modified { secs, nanos }, dimensions, bytes })
 }

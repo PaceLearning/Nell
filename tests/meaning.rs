@@ -3,7 +3,7 @@ mod common;
 use std::fs;
 use std::process::Command;
 
-use common::{folder, home, nell};
+use common::{folder, home, nell, nell_with_stderr};
 
 /// Turns `/` into the platform's separator, the way the binary prints paths.
 fn native(text: &str) -> String {
@@ -35,6 +35,16 @@ fn identifiers_are_split_on_case_and_underscores() {
     assert!(out.contains(&native("src/Check.cs:2:    public bool ValidateToken(string value) => true;\n")), "{out}");
     assert!(out.contains(&native("src/auth.rs:1:fn validate_token() {}\n")), "{out}");
     assert_eq!(out.lines().count(), 3, "{out}");
+}
+
+#[test]
+fn answers_by_shared_words_and_says_so_when_the_store_has_no_vectors() {
+    let folder = folder("meaning-no-vectors");
+    nell(&folder, &["init"]);
+    let (code, out, err) = nell_with_stderr(&folder, &["--meaning", "validate", "src"]);
+    assert_eq!(code, 0);
+    assert_eq!(err, "nell: the store has no vectors yet, run nell init; answering by shared words\n");
+    assert_eq!(out.lines().count(), 2, "{out}");
 }
 
 #[test]
