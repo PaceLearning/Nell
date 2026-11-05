@@ -12,6 +12,13 @@ nell -i "validate" src/
 nell -n "TODO" .
 ```
 
+A search prints at most 50 lines, grouped by file. Files where the match is defined come first, then other source files, then tests. When lines were left out, the last line says how many, such as `312 more matches in 41 files, --all prints them`. Set the bound, or print everything:
+
+```
+nell --limit 200 "validate" src/
+nell --all "validate" src/
+```
+
 Search by meaning. Nell answers from the files it has already read:
 
 ```
