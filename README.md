@@ -10,9 +10,16 @@ Search by text, the same as grep. The output is the same shape as grep's, `path:
 nell "fn validate_token" src/
 nell -i "validate" src/
 nell -n "TODO" .
+nell -l "validate" src/
+nell -c "validate" src/
+nell -w "token" src/
+nell -C 2 "validate" src/
+nell -iw "token" src/
 ```
 
-A search prints at most 50 lines, grouped by file. Files where the match is defined come first, then other source files, then tests. When lines were left out, the last line says how many, such as `312 more matches in 41 files, --all prints them`. Set the bound, or print everything:
+The grep flags work as they do in grep, and short flags can be combined. `-n` changes nothing, because Nell always prints the line number. `-l` prints each matching file once, `-c` prints `path:count`, `-w` matches whole words only, and `-C 2` prints two lines around each match as `path-line-text`, with `--` between groups that are apart.
+
+A search prints at most 50 matches, grouped by file. Context lines from `-C` do not count. Files where the match is defined come first, then other source files, then tests. When lines were left out, the last line says how many, such as `312 more matches in 41 files, --all prints them`. Set the bound, or print everything:
 
 ```
 nell --limit 200 "validate" src/

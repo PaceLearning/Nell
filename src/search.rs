@@ -25,10 +25,12 @@ pub struct Match {
     pub text: String,
 }
 
-/// The lines that matched in one file, in line order.
+/// The lines that matched in one file, in line order, and the lines around them that do not match.
 pub struct Group {
     pub path: PathBuf,
     pub matches: Vec<Match>,
+    /// Every line that does not match and is at most the search's context lines away from a match, in line order.
+    pub context: Vec<Match>,
 }
 
 /// Why a search could not be created.
@@ -49,20 +51,33 @@ impl fmt::Display for SearchError {
 pub struct Search {
     pattern: Regex,
     paths: Vec<String>,
+    context: usize,
 }
 
 impl Search {
-    /// Creates a search for `pattern` under `paths`. Fails when the pattern is not a valid regular expression.
-    pub fn create(pattern: &str, paths: Vec<String>, ignore_case: bool) -> Result<Search, SearchError> {
-        let pattern = RegexBuilder::new(pattern)
+    /// Creates a search for `pattern` under `paths`. With `whole_word` a match must not have a word character
+    /// just before or just after it, the way grep's `-w` works. `context` is how many lines around each match
+    /// are returned as context. Fails when the pattern is not a valid regular expression.
+    pub fn create(
+        pattern: &str,
+        paths: Vec<String>,
+        ignore_case: bool,
+        whole_word: bool,
+        context: usize,
+    ) -> Result<Search, SearchError> {
+        let mut source = pattern.to_string();
+        if whole_word {
+            source = format!(r"\b{{start-half}}(?:{pattern})\b{{end-half}}");
+        }
+        let pattern = RegexBuilder::new(&source)
             .case_insensitive(ignore_case)
             .build()
             .map_err(SearchError::BadPattern)?;
-        Ok(Search { pattern, paths })
+        Ok(Search { pattern, paths, context })
     }
 
     /// Walks the paths, skipping what `.gitignore` lists and hidden files, and returns the lines that match,
-    /// grouped by file. Source files with a definition line come first, then other source files, then test
+    /// grouped by file, each group with its context lines. Source files with a definition line come first, then other source files, then test
     /// files. Within each of those, files are in walk order.
     ///
     /// A line is a definition when the words before the matched name, on the same line, start with a keyword
@@ -79,9 +94,10 @@ impl Search {
             let Ok(entry) = entry else { continue };
             let Some(kept) = files::keep(store, &entry)? else { continue };
             let Some(record) = store.held(&kept.key, kept.size, kept.modified) else { continue };
+            let lines: Vec<&str> = record.lines().collect();
             let mut matches = Vec::new();
             let mut definition = false;
-            for (index, line) in record.lines().enumerate() {
+            for (index, line) in lines.iter().enumerate() {
                 let mut matched = false;
                 for at in self.pattern.find_iter(line) {
                     matched = true;
@@ -104,6 +120,21 @@ impl Search {
             if matches.is_empty() {
                 continue;
             }
+            let mut near = vec![false; lines.len()];
+            for item in &matches {
+                let first = item.line.saturating_sub(1 + self.context);
+                let last = (item.line + self.context).min(lines.len());
+                near[first..last].fill(true);
+            }
+            for item in &matches {
+                near[item.line - 1] = false;
+            }
+            let context: Vec<Match> = lines
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| near[*index])
+                .map(|(index, line)| Match { line: index + 1, text: line.to_string() })
+                .collect();
             let key = Path::new(&kept.key);
             let mut folders = key.parent().map(|parent| parent.components()).into_iter().flatten();
             let in_test_folder = folders.any(|part| {
@@ -119,7 +150,7 @@ impl Search {
             if in_test_folder || test_name {
                 rank = 2;
             }
-            found.push((rank, Group { path: entry.path().to_path_buf(), matches }));
+            found.push((rank, Group { path: entry.path().to_path_buf(), matches, context }));
         }
         found.sort_by_key(|(rank, _)| *rank);
         Ok(found.into_iter().map(|(_, group)| group).collect())
